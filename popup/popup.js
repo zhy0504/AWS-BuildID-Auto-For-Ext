@@ -1620,6 +1620,15 @@ async function init() {
   poolDisconnectBtn.addEventListener('click', disconnectFromPool);
   poolUploadBtn.addEventListener('click', uploadToPool);
 
+  // 授权页拒绝开关
+  const denyAccessToggle = document.getElementById('deny-access-toggle');
+  chrome.runtime.sendMessage({ type: 'GET_DENY_ACCESS' }).then(res => {
+    if (res) denyAccessToggle.checked = res.denyAccess;
+  }).catch(() => {});
+  denyAccessToggle.addEventListener('change', () => {
+    chrome.runtime.sendMessage({ type: 'SET_DENY_ACCESS', value: denyAccessToggle.checked });
+  });
+
   // 绑定复制按钮事件
   document.querySelectorAll('.copy-btn').forEach(btn => {
     btn.addEventListener('click', () => {

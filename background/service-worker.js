@@ -28,6 +28,9 @@ let gptmailApiKey = 'gpt-test';  // 默认测试 Key
 let duckMailApiKey = '';  // 可选 API Key
 let duckMailDomain = '';  // 用户选择的域名
 
+// 授权页行为配置
+let denyAccess = false;  // true=拒绝授权, false=允许授权
+
 // MoeMail 配置
 let moemailApiUrl = 'https://';  // API 地址
 let moemailApiKey = '';  // API Key
@@ -1036,6 +1039,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })();
       return true;
 
+    case 'SET_DENY_ACCESS':
+      denyAccess = !!message.value;
+      chrome.storage.local.set({ denyAccess });
+      console.log('[Service Worker] 设置授权页行为:', denyAccess ? '拒绝' : '允许');
+      sendResponse({ success: true });
+      break;
+
+    case 'GET_DENY_ACCESS':
+      sendResponse({ denyAccess });
+      break;
+
     case 'SET_MOEMAIL_CONFIG':
       if (message.apiUrl !== undefined) {
         moemailApiUrl = message.apiUrl || 'https://';
@@ -1312,7 +1326,7 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 // 恢复历史记录、Gmail API 配置和邮箱渠道
-chrome.storage.local.get(['registrationHistory', 'gmailApiAuthorized', 'gmailSenderFilter', 'mailProvider', 'gptmailApiKey', 'duckMailApiKey', 'duckMailDomain', 'moemailApiUrl', 'moemailApiKey', 'moemailDomain', 'moemailPrefix', 'moemailRandomLength', 'moemailDuration']).then((stored) => {
+chrome.storage.local.get(['registrationHistory', 'gmailApiAuthorized', 'gmailSenderFilter', 'mailProvider', 'gptmailApiKey', 'duckMailApiKey', 'duckMailDomain', 'moemailApiUrl', 'moemailApiKey', 'moemailDomain', 'moemailPrefix', 'moemailRandomLength', 'moemailDuration', 'denyAccess']).then((stored) => {
   if (stored.registrationHistory) {
     registrationHistory = stored.registrationHistory;
     console.log('[Service Worker] 恢复历史记录:', registrationHistory.length, '条');
@@ -1364,6 +1378,12 @@ chrome.storage.local.get(['registrationHistory', 'gmailApiAuthorized', 'gmailSen
   if (stored.moemailDuration !== undefined) {
     moemailDuration = stored.moemailDuration;
     console.log('[Service Worker] 恢复 MoeMail 有效期:', moemailDuration);
+  }
+
+  // 恢复授权页行为配置
+  if (stored.denyAccess !== undefined) {
+    denyAccess = stored.denyAccess;
+    console.log('[Service Worker] 恢复授权页行为:', denyAccess ? '拒绝' : '允许');
   }
 
   // 恢复 Gmail API 配置

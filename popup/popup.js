@@ -11,6 +11,7 @@ const counter = document.getElementById('counter');
 
 const loopCountInput = document.getElementById('loop-count');
 const concurrencyInput = document.getElementById('concurrency');
+const registrationIntervalInput = document.getElementById('registration-interval');
 
 const startBtn = document.getElementById('start-btn');
 const stopBtn = document.getElementById('stop-btn');
@@ -155,6 +156,7 @@ function updateUI(state) {
   // 设置输入框禁用状态
   loopCountInput.disabled = !isIdle;
   concurrencyInput.disabled = !isIdle;
+  registrationIntervalInput.disabled = !isIdle;
 
   if (isIdle) {
     startBtn.style.display = 'flex';
@@ -474,6 +476,8 @@ async function copyToClipboard(text, button) {
 async function startRegistration() {
   const loopCount = parseInt(loopCountInput.value) || 1;
   const concurrency = parseInt(concurrencyInput.value) || 1;
+  const parsedInterval = parseFloat(registrationIntervalInput.value);
+  const registrationIntervalSeconds = Number.isFinite(parsedInterval) ? parsedInterval : 2;
 
   // 根据渠道类型检查配置
   if (currentProvider === 'gmail') {
@@ -499,6 +503,11 @@ async function startRegistration() {
     return;
   }
 
+  if (registrationIntervalSeconds < 0 || registrationIntervalSeconds > 300) {
+    alert('注册间隔需在 0-300 秒之间');
+    return;
+  }
+
   // Gmail 别名模式建议并发为 1
   if (currentProvider === 'gmail' && concurrency > 1) {
     const confirm = window.confirm('使用 Gmail 别名模式时，建议并发设为 1（需要手动输入验证码）。\n\n是否继续？');
@@ -512,6 +521,7 @@ async function startRegistration() {
       type: 'START_BATCH_REGISTRATION',
       loopCount,
       concurrency,
+      registrationIntervalSeconds,
       provider: currentProvider,
       gmailAddress: currentProvider === 'gmail' ? gmailAddress : ''
     });
@@ -1091,7 +1101,7 @@ async function loadDuckMailDomains() {
  * MoeMail 配置状态
  */
 let moemailConfig = {
-  apiUrl: 'https://',
+  apiUrl: '',
   apiKey: '',
   domain: '',
   prefix: '',
@@ -1099,6 +1109,79 @@ let moemailConfig = {
   duration: 0,
   isConnected: false
 };
+
+/**
+ * 规范化并校验 MoeMail API URL
+ * @returns {{baseUrl: string, originPattern: string}}
+ */
+function normalizeMoeMailApiUrl(input) {
+  let raw = (input || '').trim();
+
+  if (!raw) {
+    throw new Error('请输入 MoeMail API 地址');
+  }
+
+  if (!/^https?:\/\//i.test(raw)) {
+    raw = `https://${raw}`;
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error('API 地址格式无效，请使用 https://域名');
+  }
+
+  if (!parsed.hostname) {
+    throw new Error('API 地址缺少域名');
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('API 地址仅支持 http/https 协议');
+  }
+
+  if (parsed.protocol === 'http:') {
+    parsed.protocol = 'https:';
+  }
+
+  const pathname = parsed.pathname && parsed.pathname !== '/'
+    ? parsed.pathname.replace(/\/+$/, '')
+    : '';
+
+  const baseUrl = `${parsed.origin}${pathname}`;
+  const originPattern = `${parsed.origin}/*`;
+
+  return { baseUrl, originPattern };
+}
+
+/**
+ * 请求 MoeMail 域名访问权限（可选权限）
+ */
+async function ensureMoeMailOriginPermission(originPattern, requestIfMissing = true) {
+  if (!chrome.permissions?.contains || !chrome.permissions?.request) {
+    return;
+  }
+
+  const hasPermission = await chrome.permissions.contains({ origins: [originPattern] });
+  if (hasPermission) {
+    return;
+  }
+
+  if (!requestIfMissing) {
+    throw new Error(`未授予 ${originPattern} 访问权限，请点击“测试”按钮授权`);
+  }
+
+  let granted = false;
+  try {
+    granted = await chrome.permissions.request({ origins: [originPattern] });
+  } catch {
+    throw new Error(`无法在当前时机请求权限，请点击“测试”按钮授权 ${originPattern}`);
+  }
+
+  if (!granted) {
+    throw new Error(`未授予 ${originPattern} 访问权限`);
+  }
+}
 
 /**
  * 加载 MoeMail 配置
@@ -1133,7 +1216,7 @@ async function loadMoeMailConfig() {
 
     // 如果有 API Key，自动测试连接
     if (moemailConfig.apiKey) {
-      await testMoeMailConnection();
+      await testMoeMailConnection({ requestPermission: false });
     }
   } catch (error) {
     console.error('[MoeMail] 加载配置错误:', error);
@@ -1144,23 +1227,33 @@ async function loadMoeMailConfig() {
  * 保存 MoeMail API 配置
  */
 async function saveMoeMailApiConfig() {
-  const apiUrl = moemailApiUrlInput.value.trim();
   const apiKey = moemailApiKeyInput.value.trim();
+  const apiUrlInput = moemailApiUrlInput.value.trim();
   
-  if (!apiUrl || !apiKey) {
+  if (!apiUrlInput || !apiKey) {
     showMoeMailStatus('请填写完整的 API 配置', 'error');
+    return;
+  }
+
+  let normalized;
+  try {
+    normalized = normalizeMoeMailApiUrl(apiUrlInput);
+    await ensureMoeMailOriginPermission(normalized.originPattern);
+  } catch (error) {
+    showMoeMailStatus(error.message, 'error');
     return;
   }
   
   try {
     await chrome.runtime.sendMessage({
       type: 'SET_MOEMAIL_CONFIG',
-      apiUrl: apiUrl,
+      apiUrl: normalized.baseUrl,
       apiKey: apiKey
     });
     
-    moemailConfig.apiUrl = apiUrl;
+    moemailConfig.apiUrl = normalized.baseUrl;
     moemailConfig.apiKey = apiKey;
+    moemailApiUrlInput.value = normalized.baseUrl;
     
     showMoeMailStatus('API 配置已保存', 'success');
     
@@ -1175,11 +1268,31 @@ async function saveMoeMailApiConfig() {
 /**
  * 测试 MoeMail API 连接
  */
-async function testMoeMailConnection() {
-  if (!moemailConfig.apiKey) {
+async function testMoeMailConnection(options = {}) {
+  const { requestPermission = true } = options;
+
+  const apiKey = moemailApiKeyInput.value.trim() || moemailConfig.apiKey;
+  if (!apiKey) {
     showMoeMailStatus('请先配置 API Key', 'error');
     return;
   }
+
+  const apiUrlInput = moemailApiUrlInput.value.trim() || moemailConfig.apiUrl;
+  let normalized;
+
+  try {
+    normalized = normalizeMoeMailApiUrl(apiUrlInput);
+    await ensureMoeMailOriginPermission(normalized.originPattern, requestPermission);
+  } catch (error) {
+    moemailConfig.isConnected = false;
+    showMoeMailStatus(error.message, 'error');
+    return;
+  }
+
+  moemailConfig.apiUrl = normalized.baseUrl;
+  moemailConfig.apiKey = apiKey;
+  moemailApiUrlInput.value = normalized.baseUrl;
+  moemailApiKeyInput.value = apiKey;
   
   moemailTestConnectionBtn.disabled = true;
   moemailTestConnectionBtn.textContent = '测试中...';
@@ -1187,8 +1300,8 @@ async function testMoeMailConnection() {
   try {
     const response = await chrome.runtime.sendMessage({
       type: 'TEST_MOEMAIL_CONNECTION',
-      apiUrl: moemailConfig.apiUrl,
-      apiKey: moemailConfig.apiKey
+      apiUrl: normalized.baseUrl,
+      apiKey
     });
     
     if (response.success) {
@@ -1609,11 +1722,7 @@ async function init() {
   moemailTestConnectionBtn.addEventListener('click', testMoeMailConnection);
   moemailRefreshDomainsBtn.addEventListener('click', loadMoeMailDomains);
   moemailApiUrlInput.addEventListener('blur', () => {
-    const url = moemailApiUrlInput.value.trim();
-    if (url) {
-      moemailConfig.apiUrl = url;
-      chrome.runtime.sendMessage({ type: 'SET_MOEMAIL_CONFIG', apiUrl: url });
-    }
+    moemailConfig.apiUrl = moemailApiUrlInput.value.trim();
   });
   moemailApiKeyInput.addEventListener('blur', () => {
     const key = moemailApiKeyInput.value.trim();

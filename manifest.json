@@ -38,6 +38,9 @@
     "https://ipwhois.app/*",
     "https://api.ip.sb/*"
   ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
   "incognito": "spanning",
   "action": {
     "default_popup": "popup/popup.html",

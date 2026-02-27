@@ -58,7 +58,7 @@ function getEnabledIpApis() {
 }
 
 // MoeMail 配置
-let moemailApiUrl = 'https://';  // API 地址
+let moemailApiUrl = '';  // API 地址
 let moemailApiKey = '';  // API Key
 let moemailDomain = '';  // 邮箱域名后缀
 let moemailPrefix = '';  // 固定前缀（可选）
@@ -279,6 +279,7 @@ let sessionIdCounter = 0;
 let taskQueue = [];
 let isRunning = false;
 let shouldStop = false;
+let registrationIntervalMs = 2000; // 账号间隔（毫秒）
 
 // 注册历史记录
 let registrationHistory = [];
@@ -1117,10 +1118,15 @@ async function validateAllTokens() {
 /**
  * 开始批量注册
  */
-async function startBatchRegistration(loopCount, concurrency, provider, gmailAddress) {
+async function startBatchRegistration(loopCount, concurrency, provider, gmailAddress, registrationIntervalSeconds = 2) {
   if (isRunning) {
     return { success: false, error: '已有注册任务在运行' };
   }
+
+  const parsedIntervalSeconds = Number(registrationIntervalSeconds);
+  registrationIntervalMs = Number.isFinite(parsedIntervalSeconds)
+    ? Math.max(0, Math.min(300, parsedIntervalSeconds)) * 1000
+    : 2000;
 
   // 设置渠道
   currentMailProvider = provider || 'gmail';
@@ -1155,7 +1161,7 @@ async function startBatchRegistration(loopCount, concurrency, provider, gmailAdd
   sessions.clear();
   broadcastState();
 
-  console.log(`[Service Worker] 开始批量注册: 目标=${loopCount}, 并发=${concurrency}, 渠道=${currentMailProvider}`);
+  console.log(`[Service Worker] 开始批量注册: 目标=${loopCount}, 并发=${concurrency}, 渠道=${currentMailProvider}, 间隔=${registrationIntervalMs}ms`);
 
   // 创建任务队列
   taskQueue = [];
@@ -1225,9 +1231,9 @@ async function runWorker(workerId) {
       step: `进度 ${doneAfter}/${globalState.totalTarget}`
     });
 
-    // 任务间延迟
+    // 任务间延迟（可配置）
     if (!shouldStop && taskQueue.length > 0) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, registrationIntervalMs));
     }
   }
 
@@ -1417,7 +1423,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         message.loopCount || 1,
         message.concurrency || 1,
         message.provider || 'gmail',
-        message.gmailAddress
+        message.gmailAddress,
+        message.registrationIntervalSeconds
       ).then(sendResponse);
       return true;
 
@@ -1556,7 +1563,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'SET_MOEMAIL_CONFIG':
       if (message.apiUrl !== undefined) {
-        moemailApiUrl = message.apiUrl || 'https://';
+        const nextApiUrl = (message.apiUrl || '').trim();
+        moemailApiUrl = (nextApiUrl === 'https://' || nextApiUrl === 'http://') ? '' : nextApiUrl;
         chrome.storage.local.set({ moemailApiUrl });
         console.log('[Service Worker] 设置 MoeMail API URL:', moemailApiUrl);
       }
@@ -1706,8 +1714,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
 
     case 'DELETE_HISTORY_ITEM':
-      registrationHistory = registrationHistory.filter(r => r.id !== message.id);
+      registrationHistory = registrationHistory.filter(r => String(r.id) !== String(message.id));
       chrome.storage.local.set({ registrationHistory });
+      broadcastState();
       sendResponse({ success: true });
       break;
 
@@ -1875,7 +1884,8 @@ chrome.storage.local.get(['registrationHistory', 'gmailApiAuthorized', 'gmailSen
 
   // 恢复 MoeMail 配置
   if (stored.moemailApiUrl) {
-    moemailApiUrl = stored.moemailApiUrl;
+    const restoredApiUrl = String(stored.moemailApiUrl).trim();
+    moemailApiUrl = (restoredApiUrl === 'https://' || restoredApiUrl === 'http://') ? '' : restoredApiUrl;
     console.log('[Service Worker] 恢复 MoeMail API URL:', moemailApiUrl);
   }
   if (stored.moemailApiKey) {
